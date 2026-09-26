@@ -11,6 +11,8 @@ export interface RepairProgress {
   percent: number;
   /** 当前卡点步骤 */
   current: RepairStep | undefined;
+  /** 等待配件中的工序 */
+  waiting: RepairStep[];
   /** 顺序号缺口 */
   gaps: number[];
 }
@@ -31,6 +33,7 @@ export function useRepairProgress(clockId: string | Ref<string>) {
   const rolledback = computed(() => steps.value.filter((it) => it.state === 'rolledback').length);
   const percent = computed(() => (total.value === 0 ? 0 : Math.round((done.value / total.value) * 100)));
   const current = computed(() => steps.value.find((it) => it.state !== 'done'));
+  const waiting = computed(() => steps.value.filter((it) => it.state === 'waiting'));
   const gaps = computed(() => findSeqGaps(steps.value.map((it) => it.seq)));
 
   const progress = computed<RepairProgress>(() => ({
@@ -40,8 +43,9 @@ export function useRepairProgress(clockId: string | Ref<string>) {
     rolledback: rolledback.value,
     percent: percent.value,
     current: current.value,
+    waiting: waiting.value,
     gaps: gaps.value,
   }));
 
-  return { progress, steps, total, done, rolledback, percent, current, gaps };
+  return { progress, steps, total, done, rolledback, percent, current, waiting, gaps };
 }

@@ -16,9 +16,11 @@ const partStore = usePartStore();
 const stepStore = useStepStore();
 
 const clockId = ref(String(route.query.clockId ?? ''));
-const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
+const { steps, total, percent, current, waiting, gaps } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const nextSeq = computed(() => (steps.value.length === 0 ? 1 : Math.max(...steps.value.map((s) => s.seq)) + 1));
+/** 等待配件中的工序（存在时禁止追加后道工序） */
+const waitingFirst = computed(() => waiting.value[0]);
 
 const form = reactive<RepairStepDraft>({
   clockId: '',
@@ -62,6 +64,10 @@ async function submit() {
     error.value = '请先选择钟表';
     return;
   }
+  if (waitingFirst.value) {
+    error.value = `工序 #${waitingFirst.value.seq} ${waitingFirst.value.stepType} 正在等待配件，复工后才能追加后道工序`;
+    return;
+  }
   if (!form.operator.trim()) {
     error.value = '责任人必填';
     return;
@@ -83,12 +89,20 @@ async function submit() {
 }
 
 async function finish(id: string) {
-  await stepStore.finish(id);
-  ElMessage.success('步骤已完成');
+  try {
+    await stepStore.finish(id);
+    ElMessage.success('步骤已完成');
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
 }
 async function rollback(id: string) {
-  await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  try {
+    await stepStore.rollback(id);
+    ElMessage.warning('步骤已回退');
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
 }
 
 onMounted(async () => {
@@ -115,6 +129,14 @@ onMounted(async () => {
     <div class="grid">
       <el-card shadow="never">
         <template #header><strong>工序信息</strong></template>
+        <el-alert
+          v-if="waitingFirst"
+          :title="`工序 #${waitingFirst.seq} ${waitingFirst.stepType} 正在等待配件，复工前不可追加后道工序`"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
         <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 12px" />
         <el-form :model="form" label-width="120px">
           <el-form-item label="钟表">
@@ -173,7 +195,7 @@ onMounted(async () => {
             <el-input v-model="form.operator" />
           </el-form-item>
           <el-form-item>
-            <el-button type="primary" @click="submit">保存步骤</el-button>
+            <el-button type="primary" :disabled="!!waitingFirst" @click="submit">保存步骤</el-button>
             <el-button @click="router.push('/clocks')">返回台账</el-button>
           </el-form-item>
         </el-form>

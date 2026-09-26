@@ -86,6 +86,39 @@ async function setDecision(id: string, decision: PartDecision) {
   ElMessage.success(`处理决定已改为「${decision}」`);
 }
 
+/* ---------- 配换登记（改决定 + 来源批号） ---------- */
+const replaceDialogVisible = ref(false);
+const replaceError = ref('');
+const replaceTargetId = ref('');
+const replaceForm = reactive<{ decision: PartDecision; sourceLot: string }>({
+  decision: '换新',
+  sourceLot: '',
+});
+const replaceTarget = computed(() => partStore.items.find((p) => p.id === replaceTargetId.value));
+
+function openReplaceDialog(id: string) {
+  const part = partStore.items.find((p) => p.id === id);
+  if (!part) return;
+  replaceTargetId.value = id;
+  replaceForm.decision = part.decision;
+  replaceForm.sourceLot = part.sourceLot;
+  replaceError.value = '';
+  replaceDialogVisible.value = true;
+}
+
+async function submitReplace() {
+  if (replaceForm.decision === '换新' && !replaceForm.sourceLot.trim()) {
+    replaceError.value = '标记为「换新」时必须填写来源批号';
+    return;
+  }
+  await partStore.update(replaceTargetId.value, {
+    decision: replaceForm.decision,
+    sourceLot: replaceForm.sourceLot.trim(),
+  });
+  replaceDialogVisible.value = false;
+  ElMessage.success('配换信息已登记');
+}
+
 onMounted(async () => {
   await clockStore.load();
   await partStore.load();
@@ -156,6 +189,11 @@ onMounted(async () => {
             <span v-else>—</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="110">
+          <template #default="{ row }">
+            <el-button size="small" @click="openReplaceDialog(row.id)">配换登记</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <el-empty v-if="group.rows.length === 0" description="该状态暂无零件" :image-size="60" />
     </el-card>
@@ -199,6 +237,27 @@ onMounted(async () => {
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="replaceDialogVisible" title="配换登记" width="480px">
+      <el-alert v-if="replaceError" :title="replaceError" type="error" :closable="false" style="margin-bottom: 10px" />
+      <el-form v-if="replaceTarget" label-width="110px">
+        <el-form-item label="零件">
+          <span>{{ replaceTarget.name }} · {{ replaceTarget.position }}（{{ clockNo(replaceTarget.clockId) }}）</span>
+        </el-form-item>
+        <el-form-item label="处理决定">
+          <el-radio-group v-model="replaceForm.decision">
+            <el-radio-button v-for="d in PART_DECISIONS" :key="d" :value="d">{{ d }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="来源批号" :required="replaceForm.decision === '换新'">
+          <el-input v-model="replaceForm.sourceLot" placeholder="如 MS-2024-07" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="replaceDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitReplace">保存</el-button>
       </template>
     </el-dialog>
   </div>
