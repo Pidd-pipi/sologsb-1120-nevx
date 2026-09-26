@@ -7,6 +7,7 @@ import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
+import StepHoldDialogs from '../components/common/StepHoldDialogs.vue';
 import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
 
 const route = useRoute();
@@ -19,6 +20,10 @@ const clockId = ref(String(route.query.clockId ?? ''));
 const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const nextSeq = computed(() => (steps.value.length === 0 ? 1 : Math.max(...steps.value.map((s) => s.seq)) + 1));
+/** 等待配件中的工序：复工前不得追加后道工序 */
+const waitingSteps = computed(() => steps.value.filter((s) => s.state === 'waiting'));
+
+const holdDialogs = ref<InstanceType<typeof StepHoldDialogs>>();
 
 const form = reactive<RepairStepDraft>({
   clockId: '',
@@ -34,6 +39,7 @@ const form = reactive<RepairStepDraft>({
   operator: '',
   startedAt: Date.now(),
   state: 'pending',
+  holds: [],
 });
 
 const error = ref('');
@@ -66,6 +72,10 @@ async function submit() {
     error.value = '责任人必填';
     return;
   }
+  if (waitingSteps.value.length > 0) {
+    error.value = `工序 ${waitingSteps.value.map((s) => `#${s.seq}`).join('、')} 等待配件中，复工前不能追加后道工序`;
+    return;
+  }
   const used = steps.value.map((s) => s.seq);
   if (used.includes(form.seq)) {
     error.value = `顺序号 ${form.seq} 已被占用，请改用 ${nextSeq.value}`;
@@ -75,20 +85,40 @@ async function submit() {
     error.value = `顺序号跳号：当前最大顺序号为 ${Math.max(0, nextSeq.value - 1)}，新步骤必须用 ${nextSeq.value}`;
     return;
   }
-  const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
-  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
-  form.operator = '';
-  form.troubleNote = '';
-  form.partIds = [];
+  try {
+    const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
+    ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
+    form.operator = '';
+    form.troubleNote = '';
+    form.partIds = [];
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  }
 }
 
 async function finish(id: string) {
-  await stepStore.finish(id);
-  ElMessage.success('步骤已完成');
+  try {
+    await stepStore.finish(id);
+    ElMessage.success('步骤已完成');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
 }
 async function rollback(id: string) {
-  await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  try {
+    await stepStore.rollback(id);
+    ElMessage.warning('步骤已回退');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
+}
+function openHold(id: string) {
+  const step = steps.value.find((it) => it.id === id);
+  if (step) holdDialogs.value?.openHold(step);
+}
+function openResume(id: string) {
+  const step = steps.value.find((it) => it.id === id);
+  if (step) holdDialogs.value?.openResume(step);
 }
 
 onMounted(async () => {
@@ -116,6 +146,14 @@ onMounted(async () => {
       <el-card shadow="never">
         <template #header><strong>工序信息</strong></template>
         <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 12px" />
+        <el-alert
+          v-if="waitingSteps.length > 0"
+          :title="`工序 ${waitingSteps.map((s) => `#${s.seq} ${s.stepType}`).join('、')} 等待配件中，复工前不能追加后道工序`"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
         <el-form :model="form" label-width="120px">
           <el-form-item label="钟表">
             <el-select v-model="clockId" style="width: 100%">
@@ -173,7 +211,7 @@ onMounted(async () => {
             <el-input v-model="form.operator" />
           </el-form-item>
           <el-form-item>
-            <el-button type="primary" @click="submit">保存步骤</el-button>
+            <el-button type="primary" :disabled="waitingSteps.length > 0" @click="submit">保存步骤</el-button>
             <el-button @click="router.push('/clocks')">返回台账</el-button>
           </el-form-item>
         </el-form>
@@ -188,9 +226,18 @@ onMounted(async () => {
             <span v-else class="muted">全部完成</span>
           </div>
         </template>
-        <StepSequence :items="steps" @finish="finish" @rollback="rollback" />
+        <StepSequence
+          :items="steps"
+          :parts="parts"
+          @finish="finish"
+          @rollback="rollback"
+          @hold="openHold"
+          @resume="openResume"
+        />
       </el-card>
     </div>
+
+    <StepHoldDialogs ref="holdDialogs" />
   </div>
 </template>
 

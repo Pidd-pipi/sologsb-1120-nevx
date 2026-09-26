@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import StateBadge from '../components/common/StateBadge.vue';
@@ -8,6 +8,7 @@ import {
   PART_DECISIONS,
   PART_NAMES,
   WEAR_STATES,
+  type MovementPart,
   type MovementPartDraft,
   type PartDecision,
   type PartName,
@@ -84,6 +85,28 @@ async function submit() {
 async function setDecision(id: string, decision: PartDecision) {
   await partStore.update(id, { decision });
   ElMessage.success(`处理决定已改为「${decision}」`);
+  if (decision === '换新') {
+    const part = partStore.byId(id);
+    if (part && !part.sourceLot.trim()) {
+      ElMessage.warning('换新件需登记来源批号，等待配件的工序才能复工');
+      await editSourceLot(part);
+    }
+  }
+}
+
+/** 修改换新来源批号（等待配件的工序复工前必须填好） */
+async function editSourceLot(part: MovementPart) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入配换来源批号', `来源批号 · ${part.name}`, {
+      inputValue: part.sourceLot,
+      inputPlaceholder: '如 MS-2024-07',
+      inputValidator: (v: string) => (!!v && !!v.trim()) || '来源批号不能为空',
+    });
+    await partStore.update(part.id, { sourceLot: value.trim() });
+    ElMessage.success('来源批号已更新');
+  } catch {
+    /* 取消修改 */
+  }
 }
 
 onMounted(async () => {
@@ -148,7 +171,20 @@ onMounted(async () => {
             </el-radio-group>
           </template>
         </el-table-column>
-        <el-table-column prop="sourceLot" label="配换来源批号" width="150" />
+        <el-table-column label="配换来源批号" width="170">
+          <template #default="{ row }">
+            <span>{{ row.sourceLot || '—' }}</span>
+            <el-button
+              v-if="row.decision === '换新'"
+              link
+              type="primary"
+              size="small"
+              @click="editSourceLot(row)"
+            >
+              修改
+            </el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="dimension" label="关键尺寸 mm" width="120" />
         <el-table-column label="待配" width="90">
           <template #default="{ row }">

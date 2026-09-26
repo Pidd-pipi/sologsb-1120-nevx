@@ -12,6 +12,7 @@ export const usePartStore = defineStore('part', {
   state: (): PartState => ({ items: [], loaded: false }),
   getters: {
     byClock: (state) => (clockId: string) => state.items.filter((it) => it.clockId === clockId),
+    byId: (state) => (id: string) => state.items.find((it) => it.id === id),
     pendingRepair: (state) => state.items.filter((it) => it.decision !== '保留' && it.wearState !== '完好'),
   },
   actions: {

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { RepairStep } from '../../types/step';
+import { activeHold, type RepairStep } from '../../types/step';
+import type { MovementPart } from '../../types/part';
+import { daysBetween } from '../../utils/timeCalc';
 import { findSeqGaps } from '../../utils/id';
 import StateBadge from './StateBadge.vue';
 
@@ -8,11 +10,15 @@ const props = defineProps<{
   items: RepairStep[];
   /** 是否展示上下移动/拖拽排序 */
   sortable?: boolean;
+  /** 该钟表的零件，用于展示缺件名称 */
+  parts?: MovementPart[];
 }>();
 
 const emit = defineEmits<{
   (e: 'finish', id: string): void;
   (e: 'rollback', id: string): void;
+  (e: 'hold', id: string): void;
+  (e: 'resume', id: string): void;
   (e: 'move', payload: { id: string; direction: 'up' | 'down' }): void;
   (e: 'reorder', payload: { fromId: string; toId: string }): void;
 }>();
@@ -30,6 +36,24 @@ function onDrop(toId: string) {
     emit('reorder', { fromId: dragId.value, toId });
   }
   dragId.value = '';
+}
+
+function partName(id: string): string {
+  return props.parts?.find((p) => p.id === id)?.name ?? '（零件已删除）';
+}
+function waitingDays(row: RepairStep): number {
+  const hold = activeHold(row);
+  return hold ? daysBetween(hold.heldAt, Date.now()) : 0;
+}
+/** 等待配件的工序及其相邻工序都不可移动 */
+function canMove(index: number, direction: 'up' | 'down'): boolean {
+  const row = props.items[index];
+  const neighbor = props.items[direction === 'up' ? index - 1 : index + 1];
+  if (!row || !neighbor) return false;
+  return row.state !== 'waiting' && neighbor.state !== 'waiting';
+}
+function fmtDate(t: number): string {
+  return new Date(t).toLocaleDateString('zh-CN');
 }
 </script>
 
@@ -52,9 +76,11 @@ function onDrop(toId: string) {
       <el-table-column label="步骤" width="110">
         <template #default="{ row }">{{ row.stepType }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="110">
         <template #default="{ row }">
           <StateBadge :state="row.state" />
+          <div v-if="row.state === 'waiting'" class="muted">已等 {{ waitingDays(row) }} 天</div>
+          <div v-else-if="row.holds.length" class="muted">停复 {{ row.holds.length }} 次</div>
         </template>
       </el-table-column>
       <el-table-column label="清洗/润滑" min-width="200">
@@ -65,31 +91,56 @@ function onDrop(toId: string) {
           <div v-if="!row.cleanSolvent && !row.oilType && !row.torque">—</div>
         </template>
       </el-table-column>
-      <el-table-column label="异常说明" min-width="160">
-        <template #default="{ row }">{{ row.troubleNote || '—' }}</template>
+      <el-table-column label="异常说明" min-width="180">
+        <template #default="{ row }">
+          <div v-if="row.state === 'waiting' && activeHold(row)" class="wait-note">
+            缺件：{{ partName(activeHold(row)!.partId) }} · 预计 {{ fmtDate(activeHold(row)!.expectedAt) }} 到件
+          </div>
+          <div>{{ row.troubleNote || '—' }}</div>
+        </template>
       </el-table-column>
       <el-table-column label="责任人" width="100">
         <template #default="{ row }">{{ row.operator }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="250">
+      <el-table-column label="操作" width="300">
         <template #default="{ row, $index }">
-          <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
-            完成
+          <el-button v-if="row.state === 'waiting'" size="small" type="warning" @click="emit('resume', row.id)">
+            复工
           </el-button>
-          <el-button v-else size="small" type="warning" @click="emit('rollback', row.id)">回退</el-button>
+          <template v-else>
+            <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
+              完成
+            </el-button>
+            <el-button v-else size="small" type="warning" @click="emit('rollback', row.id)">回退</el-button>
+            <el-button
+              v-if="row.state !== 'done'"
+              size="small"
+              type="danger"
+              plain
+              title="缺件停工，等待配件"
+              @click="emit('hold', row.id)"
+            >
+              停工
+            </el-button>
+          </template>
           <template v-if="sortable">
-            <el-button size="small" :disabled="$index === 0" @click="emit('move', { id: row.id, direction: 'up' })">
+            <el-button
+              size="small"
+              :disabled="!canMove($index, 'up')"
+              @click="emit('move', { id: row.id, direction: 'up' })"
+            >
               上移
             </el-button>
             <el-button
               size="small"
-              :disabled="$index === items.length - 1"
+              :disabled="!canMove($index, 'down')"
               @click="emit('move', { id: row.id, direction: 'down' })"
             >
               下移
             </el-button>
           </template>
           <span
+            v-if="row.state !== 'waiting'"
             class="drag-handle"
             draggable="true"
             title="拖拽到目标行可交换顺序"
@@ -115,5 +166,14 @@ function onDrop(toId: string) {
   cursor: grab;
   color: #97a0ad;
   user-select: none;
+}
+.muted {
+  color: #7b8592;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.wait-note {
+  color: #b88230;
+  font-size: 12px;
 }
 </style>

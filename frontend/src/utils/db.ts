@@ -6,7 +6,7 @@ import type { TimekeepingTest } from '../types/test';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -48,6 +48,15 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：工序支持停工/复工（等待配件），老工序仅补空 holds，状态与时间保持原样
+    this.version(3).upgrade(async (tx) => {
+      await tx
+        .table('steps')
+        .toCollection()
+        .modify((row: any) => {
+          if (row.holds === undefined) row.holds = [];
+        });
+    });
   }
 }
 
@@ -176,6 +185,7 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 12 * day,
       finishedAt: now - 12 * day + 80 * 60000,
       state: 'done',
+      holds: [],
     },
     {
       id: newId('stp'),
@@ -193,6 +203,7 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 8 * day,
       finishedAt: now - 8 * day + 45 * 60000,
       state: 'done',
+      holds: [],
     },
     {
       id: newId('stp'),
@@ -209,6 +220,7 @@ export async function ensureSeedData(): Promise<void> {
       operator: '祁仲言',
       startedAt: now - 3 * day,
       state: 'pending',
+      holds: [],
     },
   ];
 

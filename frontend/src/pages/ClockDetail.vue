@@ -7,10 +7,13 @@ import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
+import StepHoldDialogs from '../components/common/StepHoldDialogs.vue';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
+import { activeHold, type RepairStep, type StepHold } from '../types/step';
 import { judgeTest } from '../types/test';
+import { daysBetween } from '../utils/timeCalc';
 
 const route = useRoute();
 const router = useRouter();
@@ -20,35 +23,104 @@ const stepStore = useStepStore();
 
 const clockId = computed(() => String(route.params.id ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
-const { progress, steps, done, total, percent, current, gaps } = useRepairProgress(clockId);
+const { progress, steps, done, total, waiting, percent, current, gaps } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
 
+const holdDialogs = ref<InstanceType<typeof StepHoldDialogs>>();
+
+function stepById(id: string): RepairStep | undefined {
+  return steps.value.find((it) => it.id === id);
+}
+function openHold(id: string) {
+  const step = stepById(id);
+  if (step) holdDialogs.value?.openHold(step);
+}
+function openResume(id: string) {
+  const step = stepById(id);
+  if (step) holdDialogs.value?.openResume(step);
+}
+
 async function finish(id: string) {
-  await stepStore.finish(id);
-  ElMessage.success('步骤已完成');
+  try {
+    await stepStore.finish(id);
+    ElMessage.success('步骤已完成');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
 }
 async function rollback(id: string) {
-  await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  try {
+    await stepStore.rollback(id);
+    ElMessage.warning('步骤已回退');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
 }
 async function move(payload: { id: string; direction: 'up' | 'down' }) {
   const list = steps.value;
   const index = list.findIndex((it) => it.id === payload.id);
   const target = payload.direction === 'up' ? list[index - 1] : list[index + 1];
   if (!target) return;
-  await stepStore.swapSeq(payload.id, target.id);
-  ElMessage.success('顺序已调整');
+  try {
+    await stepStore.swapSeq(payload.id, target.id);
+    ElMessage.success('顺序已调整');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
 }
 async function reorder(payload: { fromId: string; toId: string }) {
-  await stepStore.swapSeq(payload.fromId, payload.toId);
-  ElMessage.success('已按拖拽交换顺序');
+  try {
+    await stepStore.swapSeq(payload.fromId, payload.toId);
+    ElMessage.success('已按拖拽交换顺序');
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : String(err));
+  }
 }
 async function changeGrade(value: unknown) {
   const grade = String(value) as ConditionGrade;
   await clockStore.setGrade(clockId.value, grade);
   ElMessage.success(`品相等级已更新为「${grade}」`);
+}
+
+/* ---------- 停复工记录 ---------- */
+interface HoldEvent {
+  time: number;
+  kind: 'hold' | 'resume';
+  step: RepairStep;
+  hold: StepHold;
+  /** 复工事件：截至本次的累计等待天数 */
+  cumulative: number;
+}
+
+const holdEvents = computed<HoldEvent[]>(() => {
+  const events: HoldEvent[] = [];
+  for (const step of steps.value) {
+    let cumulative = 0;
+    for (const hold of step.holds) {
+      events.push({ time: hold.heldAt, kind: 'hold', step, hold, cumulative: 0 });
+      if (hold.resumedAt !== undefined) {
+        cumulative += hold.waitDays ?? 0;
+        events.push({ time: hold.resumedAt, kind: 'resume', step, hold, cumulative });
+      }
+    }
+  }
+  return events.sort((a, b) => b.time - a.time);
+});
+
+function partLabel(id: string): string {
+  const part = partStore.byId(id);
+  return part ? `${part.name} · ${part.position}` : '（零件已删除）';
+}
+function fmtDate(t: number): string {
+  return new Date(t).toLocaleDateString('zh-CN');
+}
+function fmtDateTime(t: number): string {
+  return new Date(t).toLocaleString('zh-CN');
+}
+function heldDays(hold: StepHold): number {
+  return daysBetween(hold.heldAt, Date.now());
 }
 
 onMounted(async () => {
@@ -65,6 +137,7 @@ onMounted(async () => {
       <StateBadge v-if="clock" :grade="clock.conditionGrade" />
       <el-tag v-if="gaps.length" type="danger">顺序号缺口：{{ gaps.join('、') }}</el-tag>
       <el-tag v-else type="success" effect="plain">顺序号连续</el-tag>
+      <el-tag v-if="waiting" type="warning">等待配件 {{ waiting }} 道</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="router.push(`/steps/new?clockId=${clockId}`)">追加维修工序</el-button>
       <el-button @click="router.push(`/tests/${clockId}`)">走时测试录入</el-button>
@@ -103,6 +176,7 @@ onMounted(async () => {
             <div class="card-head">
               <strong>修复进度</strong>
               <el-tag size="small">{{ done }}/{{ total }} · {{ percent }}%</el-tag>
+              <el-tag v-if="waiting" size="small" type="warning">等待配件 {{ waiting }}</el-tag>
               <span v-if="current" class="muted">
                 当前卡点：#{{ current.seq }} {{ current.stepType }}（{{ current.operator }}）
               </span>
@@ -114,12 +188,46 @@ onMounted(async () => {
             <el-tab-pane label="工序顺序" name="steps">
               <StepSequence
                 :items="steps"
+                :parts="parts"
                 sortable
                 @finish="finish"
                 @rollback="rollback"
+                @hold="openHold"
+                @resume="openResume"
                 @move="move"
                 @reorder="reorder"
               />
+            </el-tab-pane>
+            <el-tab-pane :label="`停复工记录（${holdEvents.length}）`" name="holds">
+              <el-timeline v-if="holdEvents.length" class="hold-timeline">
+                <el-timeline-item
+                  v-for="event in holdEvents"
+                  :key="`${event.hold.id}-${event.kind}`"
+                  :timestamp="fmtDateTime(event.time)"
+                  :type="event.kind === 'hold' ? 'warning' : 'success'"
+                  placement="top"
+                >
+                  <div v-if="event.kind === 'hold'">
+                    <strong>#{{ event.step.seq }} {{ event.step.stepType }} · 停工等件</strong>
+                    <div class="muted">
+                      缺件：{{ partLabel(event.hold.partId) }} · 预计到件 {{ fmtDate(event.hold.expectedAt) }} ·
+                      经手人 {{ event.step.operator }}
+                    </div>
+                    <div>原因：{{ event.hold.reason }}</div>
+                    <el-tag v-if="!event.hold.resumedAt" type="warning" size="small" style="margin-top: 4px">
+                      等待中 · 已 {{ heldDays(event.hold) }} 天
+                    </el-tag>
+                  </div>
+                  <div v-else>
+                    <strong>#{{ event.step.seq }} {{ event.step.stepType }} · 复工</strong>
+                    <div class="muted">
+                      本次等待 {{ event.hold.waitDays }} 天 · 累计等待 {{ event.cumulative }} 天 · 经手人
+                      {{ event.step.operator }}
+                    </div>
+                  </div>
+                </el-timeline-item>
+              </el-timeline>
+              <el-empty v-else description="暂无停复工记录" :image-size="60" />
             </el-tab-pane>
             <el-tab-pane :label="`零件清单（${parts.length}）`" name="parts">
               <el-table :data="parts" size="small" border>
@@ -147,6 +255,8 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <StepHoldDialogs ref="holdDialogs" />
   </div>
 </template>
 
@@ -195,5 +305,8 @@ onMounted(async () => {
 }
 .test-block {
   margin-bottom: 16px;
+}
+.hold-timeline {
+  padding-left: 4px;
 }
 </style>

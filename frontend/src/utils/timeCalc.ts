@@ -54,3 +54,12 @@ export function secondsToText(seconds: number): string {
   const s = Math.round(seconds % 60);
   return `${m} 分 ${s} 秒`;
 }
+
+/** 两个时间戳之间的自然日差（按本地日历日计，不为负） */
+export function daysBetween(from: number, to: number): number {
+  const a = new Date(from);
+  a.setHours(0, 0, 0, 0);
+  const b = new Date(to);
+  b.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.round((b.getTime() - a.getTime()) / 86400000));
+}
